@@ -40,47 +40,64 @@ router.post('/setup', async (req, res) => {
 router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
-    // This validation is important
     if (!email || !password) {
         return res.status(400).json({ message: 'Please provide email and password' });
     }
 
     try {
-        // Check if user exists
+        // 1️⃣ Check if user exists
         let user = await User.findOne({ email });
         if (!user) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        // Check if password matches
+        // 2️⃣ Check password
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        // User is valid, create JWT payload
+        const allowedRoles = [
+            'Super Admin',
+            'HOD',
+            'Dean',
+            'Registrar',
+            'Vice Chancellor',
+            'Office Incharge',
+            'Clerk',
+            'Staff'
+        ];
+
+        if (!allowedRoles.includes(user.role)) {
+            return res.status(403).json({ message: 'Unauthorized role' });
+        }
+
+
+        // 4️⃣ JWT Payload
         const payload = {
             user: {
-                id: user.id,
+                id: user._id,
                 name: user.name,
-                role: user.role,
-            },
+                role: user.role
+            }
         };
 
-        // Sign the token
+        // 5️⃣ ✅ SIGN TOKEN AND RETURN IT
         jwt.sign(
             payload,
             process.env.JWT_SECRET,
-            { expiresIn: '5h' }, // Token expires in 5 hours
+            { expiresIn: '1d' },
             (err, token) => {
                 if (err) throw err;
-                res.json({ token });
+
+                // 🔥 THIS WAS MISSING
+                return res.json({ token });
             }
         );
 
     } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Server Error');
+        console.error('❌ Login error:', err.message);
+        res.status(500).json({ message: 'Server Error' });
     }
 });
 

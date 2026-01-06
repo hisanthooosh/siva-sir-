@@ -17,11 +17,24 @@ const UserSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        required: true,
-        // 'enum' means the role can only be one of these specific values
-        
-        enum: ['Super Admin', 'Admin', 'Circular Creator', 'Circular Approver', 'Circular Viewer'],
-    },
+        enum: [
+            'Super Admin',
+            'Dean',
+            'HOD',
+            'Office Incharge',
+            'Clerk',
+            'Staff',
+            'Registrar',
+            'Vice Chancellor',
+            'Circular Creator',
+            'Circular Approver',
+            'Circular Viewer'
+        ],
+        required: true
+    }
+    ,
+
+
     department: {
         type: String,
         // This is not required for all users, but useful for Viewers

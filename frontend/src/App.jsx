@@ -77,22 +77,36 @@ function App() {
     });
 
 
+    // 🔁 Central role-based dashboard redirect
     const redirectToDashboard = (user) => {
-        const roleGroup = getRoleGroup(user.role);
+        if (!user || !user.role) return 'login';
 
-        switch (roleGroup) {
-            case 'VIEWER':
-                return 'viewerDashboard';
-            case 'ADMIN':
-                return 'adminDashboard';
-            case 'APPROVER':
-                return 'approverDashboard';
-            case 'SUPER_ADMIN':
+        switch (user.role) {
+            case 'Super Admin':
                 return 'superAdminDashboard';
+
+            case 'Dean':
+            case 'HOD':
+                return 'adminDashboard';
+
+            case 'Office Incharge':
+                return 'adminDashboard';
+
+
+            case 'Vice Chancellor':
+            case 'Registrar':
+                return 'approverDashboard';
+
+            case 'Staff':
+            case 'Clerk':
+            case 'Circular Viewer':
+                return 'viewerDashboard';
+
             default:
                 return 'login';
         }
     };
+
 
     useEffect(() => {
         const handler = () => setPage('create');
@@ -189,7 +203,12 @@ function App() {
     // Updated function to load users (for SA and Admin) and approvers (for SA only)
     const loadUsersAndApprovers = async () => {
         // UPDATED CHECK: Allow SA or Admin to load users
-        if (!token || !currentUser || (currentUser?.role !== 'Super Admin' && currentUser?.role !== 'Admin')) {
+        if (
+            !token ||
+            !currentUser ||
+            !['Super Admin', 'Admin', 'HOD'].includes(currentUser.role)
+        ) {
+
             console.log("loadUsersAndApprovers skipped: User not SA or Admin, or not logged in.");
             // Ensure users list is empty if not authorized or not logged in
             setUsers([]);
@@ -355,17 +374,21 @@ function App() {
                     }
                 }
                 // Fetch data specific to Admin pages
-                else if (userForLoad.role === 'Admin') {
+                else if (['Admin', 'HOD'].includes(userForLoad.role)) {
                     if (page === 'manageUsers') {
-                        const userData = await api.getUsers(); // Fetches Admin's direct reports
+                        const userData = await api.getUsers();
+
+                        // ✅ ADD THIS LINE (DEBUG)
+                        console.log(
+                            'FRONTEND: Loaded users for',
+                            userForLoad.role,
+                            userData
+                        );
+
                         setUsers(userData);
                     }
-                    // Load signatories if Admin navigates to create page
-                    else if (page === 'create') {
-                        const sigData = await api.getSignatories();
-                        setSignatories(sigData);
-                    }
                 }
+
                 // Fetch data specific to Creator pages
                 else if (userForLoad.role === 'Circular Creator') {
                     // Load signatories if Creator navigates to create page
@@ -673,10 +696,13 @@ function App() {
             // --- END ADD ---
             // Add this case:
             case 'manageUsers':
-                if (currentUser.role !== 'Super Admin') {
+                if (
+                    currentUser.role !== 'Super Admin' &&
+                    currentUser.role !== 'HOD'
+                ) {
                     return (
                         <div className="text-center text-red-600 font-semibold p-10">
-                            Access Denied: Super Admin only
+                            Access Denied
                         </div>
                     );
                 }
@@ -754,7 +780,15 @@ function App() {
     return (
         <div className="bg-gray-100 min-h-screen font-sans">
             {/* To this: */}
-            {currentUser && <Header onLogout={handleLogout} setPage={setPage} currentPage={page} currentUser={currentUser} onOpenSidebar={() => setIsSidebarOpen(true)} />}
+            {currentUser && <Header
+                onLogout={handleLogout}
+                setPage={setPage}
+                currentPage={page}
+                currentUser={currentUser}
+                redirectToDashboard={redirectToDashboard}
+                onOpenSidebar={() => setIsSidebarOpen(true)}
+            />
+            }
             {/* ... rest of the return ... */}
             <main className="container mx-auto p-4 sm:p-6 lg:p-8">
                 {renderPage()}
@@ -765,7 +799,9 @@ function App() {
                 onClose={() => setIsSidebarOpen(false)}
                 setPage={setPage}
                 currentUser={currentUser}
+                redirectToDashboard={redirectToDashboard}
             />
+
             {/* --- END Sidebar Rendering --- */}
             {isReviewModalOpen && (
                 <ReviewModal
@@ -826,8 +862,8 @@ function App() {
 }
 
 // --- Components (Styled with the light theme) ---
+function Header({ onLogout, setPage, currentPage, currentUser, onOpenSidebar, redirectToDashboard }) {
 
-function Header({ onLogout, setPage, currentPage, currentUser, onOpenSidebar }) {
     const navItemBase = "flex items-center py-2 px-4 rounded-lg text-sm font-medium transition-colors duration-200";
     const activeClass = "bg-blue-600 text-white shadow";
     const inactiveClass = "text-gray-600 hover:bg-gray-200";
@@ -1405,22 +1441,23 @@ function ReviewModal({ circular, approvers, onClose, onSubmit, isLoading }) {
 }
 function ManageUsersPage({ users = [], onAddUser, onDeleteUser, error, currentUser }) {
 
-    // 🔒 Only Super Admin is allowed here
-    if (currentUser?.role !== 'Super Admin') {
+    if (
+        currentUser?.role !== 'Super Admin' &&
+        currentUser?.role !== 'HOD'
+    ) {
         return (
             <div className="p-10 text-center text-red-600 font-semibold">
-                Access Denied – Super Admin only
+                Access Denied
             </div>
         );
     }
 
-    // ✅ Allowed roles ONLY for Super Admin
-    const allowedRolesForSuperAdmin = [
-        'Vice Chancellor',
-        'Registrar',
-        'Dean',
-        'HOD'
-    ];
+
+    // ✅ Allowed roles based on who is logged in
+    const allowedRoles =
+        currentUser.role === 'Super Admin'
+            ? ['Vice Chancellor', 'Registrar', 'Dean', 'HOD']
+            : ['Office Incharge', 'Clerk', 'Staff'];
 
     // 🧾 Form State
     const [formData, setFormData] = useState({
@@ -1442,9 +1479,14 @@ function ManageUsersPage({ users = [], onAddUser, onDeleteUser, error, currentUs
     // 🚀 Submit handler
     const handleSubmit = (e) => {
         e.preventDefault();
-        onAddUser(formData);
 
-        // Reset form
+        const payload = {
+            ...formData,
+            managedBy: currentUser.id
+        };
+
+        onAddUser(payload);
+
         setFormData({
             name: '',
             email: '',
@@ -1453,6 +1495,7 @@ function ManageUsersPage({ users = [], onAddUser, onDeleteUser, error, currentUs
             department: ''
         });
     };
+
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -1517,7 +1560,7 @@ function ManageUsersPage({ users = [], onAddUser, onDeleteUser, error, currentUs
                             className="mt-1 p-2 border rounded-md w-full bg-white"
                         >
                             <option value="">Select Role</option>
-                            {allowedRolesForSuperAdmin.map(role => (
+                            {allowedRoles.map(role => (
                                 <option key={role} value={role}>
                                     {role}
                                 </option>
@@ -1525,7 +1568,10 @@ function ManageUsersPage({ users = [], onAddUser, onDeleteUser, error, currentUs
                         </select>
                     </div>
 
-                    {(formData.role === 'Dean' || formData.role === 'HOD') && (
+
+
+                    {['Dean', 'HOD', 'Office Incharge', 'Clerk', 'Staff'].includes(formData.role) && (
+
                         <div>
                             <label className="block font-bold text-gray-700">
                                 Department
@@ -2275,7 +2321,8 @@ function AllCircularsOverviewPage({ allCirculars = [], onView, availableSignator
     );
 }
 // --- CORRECTED SidebarMenu Component ---
-function SidebarMenu({ isOpen, onClose, setPage, currentUser }) {
+function SidebarMenu({ isOpen, onClose, setPage, currentUser, redirectToDashboard }) {
+
     // --- ADDED SAFETY CHECK ---
     // If currentUser is null or undefined, don't render anything inside
     if (!currentUser) {
@@ -2333,19 +2380,32 @@ function SidebarMenu({ isOpen, onClose, setPage, currentUser }) {
 
 
                     {/* New Circular visible to SA, Admin, and CC */}
-                    {(currentUser.role === 'Admin' || currentUser.role === 'Circular Creator') && (
-                        <button
-                            onClick={() => handleNavigate('create')}
-                            className={`${navItemBase} ${linkClass}`}
-                        >
-                            <IconNewCircular /> New Circular
-                        </button>
-                    )}
+                    {(
+                        currentUser.role === 'Admin' ||
+                        currentUser.role === 'Office Incharge'
+                    ) && (
+
+                            <button
+                                onClick={() => handleNavigate('create')}
+                                className={`${navItemBase} ${linkClass}`}
+                            >
+                                <IconNewCircular /> New Circular
+                            </button>
+                        )}
 
                     {/* Manage Users visible to SA and Admin */}
-                    {(currentUser.role === 'Super Admin' || currentUser.role === 'Admin') && (
-                        <button onClick={() => handleNavigate('manageUsers')} className={`${navItemBase} ${linkClass}`}><IconManageUsers /> Manage Users</button>
-                    )}
+                    {(
+                        currentUser.role === 'Super Admin' ||
+                        currentUser.role === 'HOD'
+                    ) && (
+                            <button
+                                onClick={() => handleNavigate('manageUsers')}
+                                className={`${navItemBase} ${linkClass}`}
+                            >
+                                <IconManageUsers /> Manage Users
+                            </button>
+                        )}
+
 
                     {/* Signatories, All Users, All Circulars visible only to SA */}
                     {currentUser.role === 'Super Admin' && (

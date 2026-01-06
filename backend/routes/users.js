@@ -4,7 +4,11 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const authMiddleware = require('../middleware/auth');
 
-// Middleware Functions for Role Checks
+/* ======================================================
+   ROLE CHECK MIDDLEWARES
+====================================================== */
+
+// Super Admin only
 const isSuperAdmin = (req, res, next) => {
     if (!req.user || req.user.role !== 'Super Admin') {
         return res.status(403).json({ message: 'Access denied. Super Admin role required.' });
@@ -12,125 +16,135 @@ const isSuperAdmin = (req, res, next) => {
     next();
 };
 
-// --- REPLACE the existing isAdminOrSuperAdmin function with this ---
+// Admin or Super Admin
 const isAdminOrSuperAdmin = (req, res, next) => {
-    console.log("--- isAdminOrSuperAdmin middleware ---"); // Log entry point
-
-    // Check 1: Did authMiddleware run and set req.user?
     if (!req.user) {
-        console.log("isAdminOrSuperAdmin: FAILED - req.user is undefined. Authentication might have failed or middleware order is wrong.");
-        // If authMiddleware failed, it should have sent 401. This case indicates a potential setup issue.
-        return res.status(500).json({ message: 'Middleware configuration error.' });
+        return res.status(401).json({ message: 'Authentication failed.' });
     }
 
-    const userRole = req.user.role;
-    console.log(`isAdminOrSuperAdmin: Checking user info passed from authMiddleware: ID=${req.user.id}, Role=${userRole}`); // Log user info
-
-    // Check 2: Is the role allowed?
-    if (userRole === 'Admin' || userRole === 'Super Admin') {
-        console.log(`isAdminOrSuperAdmin: Access GRANTED for role "${userRole}". Calling next().`);
-        next(); // Allow access
-    } else {
-        console.log(`isAdminOrSuperAdmin: Access DENIED. Role "${userRole}" is not Admin or Super Admin.`);
-        return res.status(403).json({ message: 'Access denied. Admin or Super Admin role required.' });
+    if (req.user.role === 'Admin' || req.user.role === 'Super Admin' || req.user.role === 'HOD') {
+        return next();
     }
+
+    return res.status(403).json({ message: 'Access denied.' });
 };
-// --- END REPLACEMENT ---
 
-// @route   POST api/users
-// @desc    Create a new user (Super Admin creates Admins/Others, Admin creates CC/CV)
-// @access  Private (Admin or Super Admin)
-router.post('/', [authMiddleware, isAdminOrSuperAdmin], async (req, res) => {
-    const { name, email, password, role, department } = req.body;
-    const loggedInUser = req.user; // Info of the user making the request
+/* ======================================================
+   CREATE USER
+   Super Admin → VC / Registrar / Dean / HOD
+   HOD → Office Incharge / Clerk / Staff
+====================================================== */
 
+router.post('/', authMiddleware, async (req, res) => {
     try {
-        // Role Validation: Who can create whom?
-        if (loggedInUser.role === 'Admin' && (role === 'Super Admin' || role === 'Admin' || role === 'Circular Approver')) {
-            return res.status(403).json({ message: 'Admins can only create Circular Creators or Viewers.' });
-        }
-        // Add more validation if needed (e.g., ensure required fields based on role)
+        const { name, email, password, role, department } = req.body;
+        const loggedInUser = req.user;
 
-        let user = await User.findOne({ email });
-        if (user) {
+        if (!name || !email || !password || !role) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        /* ---------- SUPER ADMIN RULES ---------- */
+        if (loggedInUser.role === 'Super Admin') {
+            const allowedRoles = ['Vice Chancellor', 'Registrar', 'Dean', 'HOD'];
+
+            if (!allowedRoles.includes(role)) {
+                return res.status(403).json({
+                    message: 'Super Admin can only create VC, Registrar, Dean, or HOD'
+                });
+            }
+
+            if ((role === 'Dean' || role === 'HOD') && !department) {
+                return res.status(400).json({
+                    message: 'Department is required for Dean and HOD'
+                });
+            }
+        }
+
+        /* ---------- HOD RULES ---------- */
+        if (loggedInUser.role === 'HOD') {
+            const allowedRolesForHOD = ['Office Incharge', 'Clerk', 'Staff'];
+
+            if (!allowedRolesForHOD.includes(role)) {
+                return res.status(403).json({
+                    message: 'HOD can only create Office Incharge, Clerk, or Staff'
+                });
+            }
+
+            // Force department from HOD
+            req.body.department = loggedInUser.department;
+        }
+
+        /* ---------- BLOCK OTHERS ---------- */
+        if (!['Super Admin', 'HOD'].includes(loggedInUser.role)) {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
             return res.status(400).json({ message: 'User with this email already exists' });
         }
 
-        // Determine the manager (managedBy)
-        let managerId = null;
-        if (role === 'Circular Creator' || role === 'Circular Viewer') {
-            // If created by Admin or SA, set them as manager
-            if (loggedInUser.role === 'Admin' || loggedInUser.role === 'Super Admin') {
-                managerId = loggedInUser.id;
-            }
-        }
-        // Note: Super Admin creating an Admin - managerId remains null
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
 
-        user = new User({
+        const newUser = new User({
             name,
             email,
-            password,
+            password: hashedPassword,
             role,
-            department: department || undefined, // Set department only if provided
-            managedBy: managerId // Set the determined manager
+            department: req.body.department || null,
+            managedBy: loggedInUser.id
         });
 
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(password, salt);
+        await newUser.save();
 
-        await user.save();
-
-        const userToReturn = user.toObject();
-        delete userToReturn.password;
-
-        res.status(201).json({ message: 'User created successfully', user: userToReturn });
+        res.status(201).json({
+            message: 'User created successfully',
+            user: {
+                id: newUser._id,
+                name: newUser.name,
+                email: newUser.email,
+                role: newUser.role,
+                department: newUser.department
+            }
+        });
 
     } catch (err) {
-        console.error("Error creating user:", err.message);
+        console.error('❌ Error creating user:', err);
         res.status(500).json({ message: 'Server Error creating user' });
     }
 });
-// @route   GET api/users
-// @desc    Get users (Super Admin sees ALL, Admin sees ONLY their managed users)
-// @access  Private (Admin or Super Admin)
+
+/* ======================================================
+   GET USERS
+   Super Admin → all users
+   HOD/Admin → only managed users
+====================================================== */
+
 router.get('/', [authMiddleware, isAdminOrSuperAdmin], async (req, res) => {
-    console.log("--- GET /api/users ---"); // Simplified log message
     try {
-        const loggedInUserId = req.user.id;
-        const loggedInUserRole = req.user.role;
+        let query = {};
 
-        let query = {}; // Default: empty query (gets all users)
-
-        console.log(`Fetching users for: ID=${loggedInUserId}, Role=${loggedInUserRole}`);
-
-        // --- Apply filter ONLY if the logged-in user is an Admin ---
-        if (loggedInUserRole === 'Admin') {
-            // Admin sees ONLY users they directly manage
-            query = { managedBy: loggedInUserId };
-            console.log("Applying Admin filter:", JSON.stringify(query));
-        } else if (loggedInUserRole === 'Super Admin') {
-            // Super Admin uses the default empty query to get ALL users
-            console.log("Applying Super Admin filter (no filter - get all):", JSON.stringify(query));
+        if (req.user.role === 'HOD' || req.user.role === 'Admin') {
+            query = { managedBy: req.user.id };
         }
-        // --- End Filter Logic ---
 
-        // Find users based on the query, exclude passwords, populate manager info
         const users = await User.find(query)
             .select('-password')
-            .populate('managedBy', 'name email') // Populate manager info
-            .sort({ role: 1, name: 1 }); // Sort by role, then name
-
-        console.log(`Found ${users.length} users with query for role ${loggedInUserRole}.`);
+            .populate('managedBy', 'name email')
+            .sort({ role: 1, name: 1 });
 
         res.json(users);
     } catch (err) {
-        console.error("Error fetching users:", err.message, err.stack);
+        console.error('❌ Error fetching users:', err);
         res.status(500).json({ message: 'Server Error fetching users' });
     }
-    console.log("--- END GET /api/users ---");
 });
 
-
+/* ======================================================
+   DELETE USER
+====================================================== */
 
 router.delete('/:id', [authMiddleware, isAdminOrSuperAdmin], async (req, res) => {
     try {
@@ -139,83 +153,50 @@ router.delete('/:id', [authMiddleware, isAdminOrSuperAdmin], async (req, res) =>
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const loggedInUser = req.user;
-
-        // Prevent deleting oneself
-        if (userToDelete.id === loggedInUser.id) {
+        if (userToDelete.id === req.user.id) {
             return res.status(400).json({ message: 'You cannot delete your own account.' });
         }
 
-        // Check permissions
         let canDelete = false;
-        if (loggedInUser.role === 'Super Admin') {
-            canDelete = true; // Super Admin can delete anyone (except self)
-        } else if (loggedInUser.role === 'Admin') {
-            // Admin can only delete users they manage
-            if (userToDelete.managedBy && userToDelete.managedBy.toString() === loggedInUser.id) {
-                canDelete = true;
-            }
+
+        if (req.user.role === 'Super Admin') {
+            canDelete = true;
+        } else if (
+            (req.user.role === 'HOD' || req.user.role === 'Admin') &&
+            userToDelete.managedBy?.toString() === req.user.id
+        ) {
+            canDelete = true;
         }
 
         if (!canDelete) {
-            return res.status(403).json({ message: 'You do not have permission to delete this user.' });
+            return res.status(403).json({ message: 'Permission denied' });
         }
 
-        // Perform deletion
         await User.findByIdAndDelete(req.params.id);
         res.json({ message: 'User deleted successfully' });
+
     } catch (err) {
-        console.error("Error deleting user:", err.message);
+        console.error('❌ Error deleting user:', err);
         res.status(500).json({ message: 'Server Error deleting user' });
     }
 });
 
-// --- NEW ROUTE for Super Admin All Users View ---
-// @route   GET api/users/all
-// @desc    Get ALL users in the system
-// @access  Private (Super Admin ONLY)
-router.get('/all', [authMiddleware, isSuperAdmin], async (req, res) => { // Uses isSuperAdmin middleware
-    console.log("--- GET /api/users/all (SA Overview) ---");
-    try {
-        // Find ALL users, exclude passwords, populate manager info
-        const allUsers = await User.find({}) // Empty query {} fetches all
-            .select('-password')
-            .populate('managedBy', 'name email') // Populate manager details
-            .sort({ role: 1, name: 1 }); // Sort by role, then name
+/* ======================================================
+   SUPER ADMIN – ALL USERS OVERVIEW
+====================================================== */
 
-        console.log(`Found ${allUsers.length} total users for SA overview.`);
+router.get('/all', [authMiddleware, isSuperAdmin], async (req, res) => {
+    try {
+        const allUsers = await User.find({})
+            .select('-password')
+            .populate('managedBy', 'name email')
+            .sort({ role: 1, name: 1 });
 
         res.json(allUsers);
     } catch (err) {
-        console.error("Error fetching all users:", err.message, err.stack);
+        console.error('❌ Error fetching all users:', err);
         res.status(500).json({ message: 'Server Error fetching all users' });
     }
-    console.log("--- END GET /api/users/all (SA Overview) ---");
 });
-// --- END NEW ROUTE ---
 
-// --- NEW ROUTE for Super Admin All Users View ---
-// @route   GET api/users/all
-// @desc    Get ALL users in the system
-// @access  Private (Super Admin ONLY)
-router.get('/all', [authMiddleware, isSuperAdmin], async (req, res) => { // Uses isSuperAdmin middleware
-    console.log("--- GET /api/users/all (SA Overview) ---");
-    try {
-        // Find ALL users, exclude passwords, populate manager info
-        const allUsers = await User.find({}) // Empty query {} fetches all
-            .select('-password')
-            .populate('managedBy', 'name email') // Populate manager details
-            .sort({ role: 1, name: 1 }); // Sort by role, then name
-
-        console.log(`Found ${allUsers.length} total users for SA overview.`);
-
-        res.json(allUsers);
-    } catch (err) {
-        console.error("Error fetching all users:", err.message, err.stack);
-        res.status(500).json({ message: 'Server Error fetching all users' });
-    }
-    console.log("--- END GET /api/users/all (SA Overview) ---");
-});
-// --- END NEW ROUTE ---
 module.exports = router;
-
