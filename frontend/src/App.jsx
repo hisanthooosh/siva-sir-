@@ -353,26 +353,35 @@ function App() {
                 }
 
 
-                // Fetch data based on page and role
-                if (userForLoad.role === 'Super Admin') {
-                    if (page === 'manageUsers') {
-                        const userData = await api.getUsers(); // Fetches SA's direct reports + Admins
-                        setUsers(userData);
-                    } else if (page === 'manageSignatories') {
-                        const sigData = await api.getSignatories();
-                        setSignatories(sigData);
-                    } else if (page === 'allUsersOverview') {
-                        const allUserData = await api.getAllUsers(); // Fetches ALL users
-                        setAllUsersOverview(allUserData);
-                    } else if (page === 'allCircularsOverview') {
-                        const allCircData = await api.getAllCirculars();
-                        setAllCircularsOverview(allCircData);
+                // 🔹 LOAD SIGNATORIES FOR CREATE PAGE (ALL ALLOWED ROLES)
+                if (page === 'create') {
+                    const sigData = await api.getSignatories();
+
+                    let filteredSignatories = sigData;
+
+                    // Office Incharge / Clerk should see only higher-level signatories
+                    if (
+                        userForLoad.role === 'Office Incharge' ||
+                        userForLoad.role === 'Clerk'
+                    ) {
+                        filteredSignatories = sigData.filter(sig =>
+                            sig.position.includes('HOD') ||
+                            sig.position.includes('Dean') ||
+                            sig.position.includes('Registrar') ||
+                            sig.position.includes('Vice Chancellor') ||
+                            sig.position.includes('Faculty')
+                        );
                     }
-                    else if (page === 'create') {
-                        const sigData = await api.getSignatories();
-                        setSignatories(sigData);
-                    }
+
+                    console.log(
+                        'FRONTEND: Loaded signatories for',
+                        userForLoad.role,
+                        filteredSignatories
+                    );
+
+                    setSignatories(filteredSignatories);
                 }
+
                 // Fetch data specific to Admin pages
                 else if (['Admin', 'HOD'].includes(userForLoad.role)) {
                     if (page === 'manageUsers') {
